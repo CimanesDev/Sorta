@@ -5,6 +5,8 @@ import path from "node:path";
 import sharp from "sharp";
 import { CATEGORIES, CATEGORY_IDS, isCategory, type CategoryId } from "./categories";
 import { IMAGES_DIR } from "./db";
+import { hideIdentities } from "./privacy";
+import { redact } from "./redact";
 
 // Local AI via Ollama (https://ollama.com). Runs on this computer; screenshots never leave it.
 export const OLLAMA_URL = (process.env.OLLAMA_URL ?? "http://127.0.0.1:11434").replace(/\/$/, "");
@@ -108,7 +110,7 @@ async function ask(images: string[], tuning: Record<string, number>) {
           { role: "user", content: `Categorize this post (${images.length} screenshot(s)).`, images },
         ],
       }),
-      signal: AbortSignal.timeout(150_000), // first run loads the model into memory (~40 s); a normal post takes ~10 s
+      signal: AbortSignal.timeout(300_000), // first run loads the model (~40 s); a post takes 15-60 s, longer on a busy or small GPU
     });
   } catch (e) {
     if (e instanceof Error && e.name === "TimeoutError") throw new AiError("The local AI took too long. Try again.");
@@ -153,18 +155,21 @@ export async function classify(filenames: string[]) {
     primary,
     categories: [primary, ...new Set(also.filter((c) => c !== primary))],
     confidence: ["low", "medium", "high"].includes(String(out.confidence)) ? String(out.confidence) : "low",
-    reason: String(out.reason ?? "").slice(0, 1000),
-    text: String(out.text ?? "").slice(0, 4000),
+    // The model often ignores the prompt's [REDACTED] rule, so names, numbers and links are removed here.
+    reason: redact(String(out.reason ?? "").slice(0, 1000)),
+    text: redact(String(out.text ?? "").slice(0, 4000)),
     model: AI_MODEL,
   };
 }
 
 export async function saveScreenshot(dir: string, index: number, data: ArrayBuffer) {
-  // Re-encoding drops EXIF/GPS metadata; .rotate() applies the EXIF orientation first.
+  // Faces and the post's header row are blurred before anything is written, so the original screenshot
+  // never reaches the disk. Re-encoding also drops EXIF/GPS metadata (EXIF orientation is applied first).
   // A random part in the name gives every upload its own address, so a browser can never show an
   // old image (e.g. a deleted post's) in place of a new one.
+  const { png } = await hideIdentities(Buffer.from(data));
   const rel = `${dir}/${String(index).padStart(2, "0")}-${crypto.randomBytes(4).toString("hex")}.png`;
   await fs.mkdir(path.join(IMAGES_DIR, dir), { recursive: true });
-  await sharp(Buffer.from(data)).rotate().png().toFile(path.join(IMAGES_DIR, rel));
+  await fs.writeFile(path.join(IMAGES_DIR, rel), png);
   return rel;
 }
