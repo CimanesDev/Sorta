@@ -132,21 +132,62 @@ export function looksLikeFace(b: Box) {
 }
 
 // Every detection at every scale, before checking its shape or removing duplicates.
-export async function findCandidates(image: Buffer): Promise<Box[]> {
+export async function findCandidates(image: Buffer, tiny = true): Promise<Box[]> {
   const { width = 0, height = 0 } = await sharp(image).metadata();
   if (!width || !height) return [];
   // Passes: the whole image in one tile (faces bigger than a tile), width fitted to one tile (most faces
   // in a phone screenshot), full size (small faces, e.g. in group photos), and double size for tiny
   // faces such as commenters' profile pictures. The last pass is skipped on very large images.
   const scales = new Set([Math.min(1, SIZE / Math.max(width, height)), Math.min(1, SIZE / width), 1]);
-  if (width * height <= 2_600_000) scales.add(2);
+  if (tiny && width * height <= 2_600_000) scales.add(2);
   const all: Box[] = [];
   for (const s of scales) all.push(...(await detectAtScale(image, width, height, s)));
   return all;
 }
 
+// YuNet only finds faces that are roughly upright. In dental posts people are often lying back in the
+// chair or leaning in sideways, so the image is also searched turned by these angles (clockwise degrees).
+// Tiny faces (profile pictures) are upright, so the turned passes skip the double-size scale.
+const ANGLES = [-45, 45, -90, 90];
+// Turned copies give the model many more chances to mistake a smile close-up for a face, so a face
+// found only there needs a clearly face-like score (teeth close-ups reach ~0.81, a turned face ~0.9).
+const MIN_SCORE_TURNED = 0.86;
+
+// Maps a box found in a copy of the image turned by `angle` back onto the original image. The turned
+// box's corners are turned back and the box that holds them is kept, so a tilted face stays covered.
+function turnBack(b: Box, angle: number, turnedW: number, turnedH: number, width: number, height: number): Box {
+  const t = (angle * Math.PI) / 180;
+  const cos = Math.cos(t);
+  const sin = Math.sin(t);
+  const back = (x: number, y: number) => {
+    const dx = x - turnedW / 2;
+    const dy = y - turnedH / 2;
+    return [dx * cos + dy * sin + width / 2, -dx * sin + dy * cos + height / 2];
+  };
+  const corners = [back(b.x, b.y), back(b.x + b.w, b.y), back(b.x, b.y + b.h), back(b.x + b.w, b.y + b.h)];
+  const xs = corners.map((c) => c[0]);
+  const ys = corners.map((c) => c[1]);
+  // The holding box of a turned square is up to 1.4 times bigger; trim part of that back.
+  const shrink = 1 - 0.15 * Math.abs(Math.sin(2 * t));
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  const w = (Math.max(...xs) - Math.min(...xs)) * shrink;
+  const h = (Math.max(...ys) - Math.min(...ys)) * shrink;
+  const points: number[] = [];
+  for (let k = 0; k < 10; k += 2) points.push(...back(b.points[k], b.points[k + 1]));
+  return { x: cx - w / 2, y: cy - h / 2, w, h, score: b.score, points };
+}
+
 export async function detectFaces(image: Buffer): Promise<Box[]> {
+  const { width = 0, height = 0 } = await sharp(image).metadata();
+  // Faces are checked for a face's shape in the copy they were found in, where they are upright.
   const all = (await findCandidates(image)).filter(looksLikeFace);
+  for (const angle of ANGLES) {
+    const turned = await sharp(image).rotate(angle, { background: "#000" }).png().toBuffer();
+    const { width: tw = 0, height: th = 0 } = await sharp(turned).metadata();
+    for (const b of (await findCandidates(turned, false)).filter((c) => c.score >= MIN_SCORE_TURNED && looksLikeFace(c)))
+      all.push(turnBack(b, angle, tw, th, width, height));
+  }
   // Keep the best box where several passes or tiles found the same face.
   const kept: Box[] = [];
   for (const b of all.sort((a, c) => c.score - a.score)) if (kept.every((k) => overlap(k, b) < 0.5)) kept.push(b);

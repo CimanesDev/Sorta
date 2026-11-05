@@ -51,6 +51,14 @@ export async function hideIdentities(data: Buffer) {
 
   for (const l of lines) {
     if (inHeader(l, header)) continue; // blurred whole already
+    // The comment box under a post shows the screenshot taker's own profile picture just left of
+    // "Comment as …"; it is too small and often too stylised for the face model, so it goes by position.
+    if (/\b(?:Comment|Reply|Answer) as\b/i.test(l.text)) {
+      const size = Math.round(l.height * 2.6);
+      const left = Math.max(0, Math.round(l.left - size * 1.6));
+      const top = Math.max(0, Math.round(l.top + l.height / 2 - size / 2));
+      areas.push({ left, top, width: Math.min(width - left, Math.round(size * 1.5)), height: Math.min(height - top, size), kind: "header" });
+    }
     const charWidth = l.width / Math.max(1, l.text.length);
     for (const [s, e] of findSensitive(l.text, names)) {
       // From just before the first character to just after the last, within the line's box.

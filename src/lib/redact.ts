@@ -59,6 +59,8 @@ const RULES: { re: RegExp; keep?: (m: string) => boolean }[] = [
   { re: /\b\d{1,2}(?:\/?F|(?:st|nd|rd|th)[ \t]+(?:Floor|Flr\.?))(?![\p{L}\d])/gu }, // floors: "2F", "3/F", "2nd Floor"
   // Facebook's "… is in Santa Rosa." / "… is at Marcelino Dental Clinic." check-in line
   { re: new RegExp(`(?<=\\bis (?:in|at)[ \\t]+)${CAP}(?:[ \\t]+${CAP}){0,3}`, "gu") },
+  // Facebook's comment box names whoever took the screenshot: "Comment as Ana Reyes", "Reply as …".
+  { re: new RegExp(`(?<=\\b(?:Comment|Reply|Answer) as[ \\t]+)${CAP}(?:[ \\t]+${CAP}){0,3}`, "gu") },
   // A title, then one to three capitalized words: "Dr. Ana Reyes", "Salamat Doc Mike".
   { re: new RegExp(`(?<=\\b(?:${TITLE})\\.?[ \\t]+)${CAP}(?:[ \\t]+${CAP}){0,2}`, "gu") },
 ];
