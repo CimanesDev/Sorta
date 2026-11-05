@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { saveScreenshot } from "@/lib/ai";
+import { PrivacyError } from "@/lib/faces";
 import { IMAGES_DIR, insertPost, nextPageCode, nextPostCode, postExists } from "@/lib/db";
 import { scheduleSheetSave } from "@/lib/sheet";
 
@@ -25,8 +26,9 @@ export async function POST(request: Request) {
   const saved: string[] = [];
   try {
     for (const [i, f] of files.entries()) saved.push(await saveScreenshot(dir, i + 1, await f.arrayBuffer()));
-  } catch {
+  } catch (e) {
     await fs.rm(path.join(IMAGES_DIR, dir), { recursive: true, force: true });
+    if (e instanceof PrivacyError) return Response.json({ error: e.message }, { status: 500 });
     return Response.json({ error: "One of the files isn't a readable image." }, { status: 400 });
   }
   const id = insertPost(pageCode, postCode, saved);

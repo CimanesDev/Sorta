@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isCategory, type CategoryId } from "./categories";
+import { redact } from "./redact";
 
 // Everything (database + screenshots) lives in one local folder. Override with POSTCODER_DATA.
 export const DATA_DIR = path.resolve(/*turbopackIgnore: true*/ process.env.POSTCODER_DATA ?? path.join(process.cwd(), "data"));
@@ -57,6 +58,7 @@ export function db() {
       conn.exec("UPDATE posts SET reviewed_at = confirmed_at WHERE source = 'human'");
     }
     renameLegacyImages(conn);
+    redactSavedText(conn);
     g.__postDb = conn;
   }
   return g.__postDb;
@@ -79,6 +81,18 @@ function renameLegacyImages(conn: DatabaseSync) {
       // file missing: leave the row as it is
     }
   }
+}
+
+// AI text saved before redaction was added (or before its rules last changed) is cleaned once.
+// Bump REDACT_VERSION when the rules in redact.ts change so older text is checked again.
+const REDACT_VERSION = 1;
+function redactSavedText(conn: DatabaseSync) {
+  const { user_version } = conn.prepare("PRAGMA user_version").get() as { user_version: number };
+  if (user_version >= REDACT_VERSION) return;
+  const update = conn.prepare("UPDATE posts SET ai_text = ?, ai_reason = ? WHERE id = ?");
+  for (const r of conn.prepare("SELECT id, ai_text, ai_reason FROM posts WHERE ai_text IS NOT NULL OR ai_reason IS NOT NULL").all() as Row[])
+    update.run(r.ai_text == null ? null : redact(String(r.ai_text)), r.ai_reason == null ? null : redact(String(r.ai_reason)), Number(r.id));
+  conn.exec(`PRAGMA user_version = ${REDACT_VERSION}`);
 }
 
 export type Post = {
